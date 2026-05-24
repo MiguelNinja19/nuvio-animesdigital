@@ -16,12 +16,12 @@ adiciona algumas melhorias defensivas.
 3. Adicione a URL deste repositório:
 
    ```
-   https://raw.githubusercontent.com/SEU-USUARIO/NOME-DO-REPO/refs/heads/main/manifest.json
+   https://raw.githubusercontent.com/MiguelNinja19/nuvio-animesdigital/refs/heads/main/manifest.json
    ```
 
 4. Habilite **AnimesDigital (Fixed)** na lista.
 
-> ⚠️ Antes de publicar, troque `SEU-USUARIO/NOME-DO-REPO` pelo path real do
+> ⚠️ Antes de publicar, troque `MiguelNinja19/nuvio-animesdigital` pelo path real do
 > seu fork no GitHub.
 
 ---
