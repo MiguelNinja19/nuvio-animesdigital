@@ -1,0 +1,71 @@
+name: Provider Tests
+
+# Roda em:
+#   - cada push na branch main
+#   - cada pull request
+#   - todo dia às 13:00 UTC (10:00 BRT) — pra detectar se o site mudou sozinho
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 13 * * *"
+  workflow_dispatch:  # permite rodar manualmente pelo botão "Run workflow"
+
+jobs:
+  test-scraping:
+    name: 🧪 Scraping logic (Node)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: 🩺 Sanity check (manifest is valid JSON)
+        run: |
+          node -e "JSON.parse(require('fs').readFileSync('manifest.json','utf8'))"
+          echo "✅ manifest.json is valid JSON"
+
+      - name: 🔍 Syntax check (provider loads without errors)
+        run: |
+          node -e "require('./providers/animesdigital.js'); console.log('✅ provider loads')"
+
+      - name: 🎬 Run scraping tests
+        run: |
+          set -e
+          OUTPUT=$(node test.js 2>&1)
+          echo "$OUTPUT"
+
+          # Conta quantos animes retornaram pelo menos 1 stream.
+          # Os testes esperam 4 animes (Demon Slayer, One Piece, Naruto, AOT).
+          # Aceita falha em até 1 (caso o CDN do site esteja temporariamente fora).
+          OK_COUNT=$(echo "$OUTPUT" | grep -c "✓" || true)
+          echo ""
+          echo "📊 Total streams retornados nos testes: $OK_COUNT"
+
+          # Mínimo aceitável: 5 streams (de ~10 esperados em condições normais).
+          # Se cair pra menos que isso, é sinal forte de que algo no site quebrou.
+          if [ "$OK_COUNT" -lt 5 ]; then
+            echo "❌ FAIL: muito poucos streams (< 5). Site provavelmente mudou."
+            exit 1
+          fi
+          echo "✅ PASS"
+
+      - name: 🌐 Site reachability check
+        run: |
+          # Verifica se a URL de busca (a que o fix usa) ainda retorna 200.
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -A "Mozilla/5.0" \
+            "https://animesdigital.org/search/demon")
+          echo "Status /search/demon: $STATUS"
+          if [ "$STATUS" != "200" ]; then
+            echo "❌ FAIL: /search/<query> não retorna mais 200 — site mudou outra vez!"
+            exit 1
+          fi
+          echo "✅ Search URL ainda funciona"
