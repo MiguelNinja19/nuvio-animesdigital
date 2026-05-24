@@ -1,19 +1,19 @@
 {
   "name": "AnimesDigital Fixed",
   "author": "Community Fork",
-  "version": "1.1.0",
-  "description": "Versão corrigida do provider AnimesDigital para o app Nuvio. Conserta a busca quebrada (site mudou /?s= para /search/) e o handshake de MIME do HLS.",
+  "version": "1.2.0",
+  "description": "Versão corrigida do provider AnimesDigital para o app Nuvio. Conserta busca (site mudou para /search/), filtra iframe MP4 falso e remove streams duplicados.",
   "scrapers": [
     {
       "id": "animesdigital",
       "name": "AnimesDigital (Fixed)",
       "description": "Anime em Português HD direto do animesdigital.org — versão corrigida",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "author": "Community Fork (orig. Nuvio Team)",
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/animesdigital.js",
       "enabled": true,
-      "formats": ["mp4", "m3u8"],
+      "formats": ["m3u8"],
       "logo": "https://i.postimg.cc/4ds5WvTj/animesdigital.png",
       "contentLanguage": ["pt", "ja"]
     }

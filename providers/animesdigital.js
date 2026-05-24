@@ -6,21 +6,33 @@
  *
  * ──────────────────────────────────────────────────────────────────
  * FIXES vs upstream (D3adlyRocket/Anime-Nuvio @ commit 3101d8223):
- *   1) The site changed search URL pattern. `/?s=<q>` now returns a 302
- *      redirect to `/search/<q>`. Some React-Native / Hermes fetch
- *      implementations drop query params or surface the 302 as the final
- *      response, resulting in zero search results. Switched to the new
- *      canonical URL `/search/<q>` (no redirect, 200 OK).
- *   2) Page-size sanity threshold lowered from 40 KB to 20 KB — the site's
- *      empty/no-results page is ~5 KB, real anime pages are 100 KB+, so 20 KB
- *      keeps the false-positive guard but tolerates layout shrinks.
- *   3) Stream object: added `notWebReady: true` because the CDN serves the
- *      .m3u8 with `Content-Type: application/octet-stream` (not the proper
- *      HLS MIME) — this tells Nuvio's player to treat the URL as a remote
- *      file that needs the native HLS demuxer rather than the web pipeline.
- *   4) Added a third fallback: scrape any `href="…/anime/a/<slug>"` from the
- *      home page if both direct-guess and search return nothing.
- *   5) Cleaned up logging.
+ *
+ *   v1.1.0
+ *     1) The site changed search URL pattern. `/?s=<q>` now returns a 302
+ *        redirect to `/search/<q>`. Some React-Native / Hermes fetch
+ *        implementations drop query params or surface the 302 as the final
+ *        response, resulting in zero search results. Switched to the new
+ *        canonical URL `/search/<q>` (no redirect, 200 OK).
+ *     2) Page-size sanity threshold lowered from 40 KB to 20 KB.
+ *     3) Stream object: added `notWebReady: true` because the CDN serves
+ *        the .m3u8 with `Content-Type: application/octet-stream`.
+ *     4) `redirect: "follow"` explicit on every fetch call.
+ *
+ *   v1.2.0
+ *     5) Filter "fake MP4" iframes. The episode page actually has TWO
+ *        iframes: one real HLS iframe pointing at api.anivideo.net, and
+ *        one decoy iframe on the same animesdigital.org domain whose URL
+ *        ends in ".mp4" but is in fact an obfuscated HTML player wrapper
+ *        (opens to /home when accessed directly). We now skip any iframe
+ *        whose host is animesdigital.org because it's never a real
+ *        stream — only api.anivideo.net / cdn-s01.* contain playable URLs.
+ *     6) Dedup streams by final URL. If multiple candidate anime pages
+ *        resolve to the SAME .m3u8 (e.g. "naruto" and "naruto-classico"
+ *        both pointing at /naruto-classico-legendado/01.mp4/index.m3u8),
+ *        we only emit one entry.
+ *     7) Friendlier titles: arc/season name derived from the slug
+ *        instead of dumping the raw URL slug. Example:
+ *        "kimetsu-no-yaiba-hashira-geiko-hen" → "Hashira Geiko Hen".
  *
  * Author of fixes: community fork — original logic by Nuvio Team.
  *
@@ -31,7 +43,7 @@
 var TMDB_API_KEY = "68e094699525b18a70bab2f86b1fa706";
 var BASE_URL = "https://animesdigital.org";
 var PROVIDER_TAG = "AnimesDigital";
-var PROVIDER_VERSION = "1.1.0";
+var PROVIDER_VERSION = "1.2.0";
 var USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36";
 
@@ -64,8 +76,6 @@ function fetchText(url, opts) {
     try {
       var r = yield fetch(url, {
         method: opts.method || "GET",
-        // `redirect: 'follow'` is the default in React Native fetch, but
-        // we set it explicitly so behavior is identical across runtimes.
         redirect: "follow",
         headers: Object.assign(
           {
@@ -189,6 +199,59 @@ function isStrictMatch(slug, expectedRoots, strongTokens) {
   return false;
 }
 
+// FIX #7: turn slug into a human-readable arc/season name.
+// "kimetsu-no-yaiba-hashira-geiko-hen-dublado" → "Hashira Geiko Hen"
+// "naruto-classico" → "Clássico"
+// "one-piece" → "" (same as main title, omit)
+function prettyArcName(slug, info) {
+  if (!slug) return "";
+  var body = slugBody(stripListSuffix(slug));
+
+  // The "main" slug is derived ONLY from info.title and info.originalTitle
+  // (not from alt titles). Alt titles are usually arc/season names and we
+  // do NOT want to strip them, otherwise distinct arcs collapse into the
+  // same display label.
+  var mainSlugs = [];
+  function pushMain(t) {
+    if (!t) return;
+    var s2 = slugify(t);
+    if (s2 && mainSlugs.indexOf(s2) === -1) mainSlugs.push(s2);
+    var noThe = s2.replace(/^the-/, "");
+    if (noThe && noThe !== s2 && mainSlugs.indexOf(noThe) === -1) mainSlugs.push(noThe);
+    // The part after the colon counts too (e.g. main = "Demon Slayer: Kimetsu
+    // no Yaiba" → also strip "kimetsu-no-yaiba" so arc names are exposed).
+    if (t.indexOf(":") !== -1) {
+      var afterColon = t.split(":").slice(1).join(":").trim();
+      var afterSlug = slugify(afterColon);
+      if (afterSlug && mainSlugs.indexOf(afterSlug) === -1) mainSlugs.push(afterSlug);
+    }
+  }
+  pushMain(info.title);
+  pushMain(info.originalTitle);
+  mainSlugs.sort(function (a, b) { return b.length - a.length; });
+
+  // If body matches the main title exactly → nothing extra to show.
+  for (var ci = 0; ci < mainSlugs.length; ci++) {
+    if (body === mainSlugs[ci]) return "";
+  }
+
+  // Strip the longest matching MAIN prefix; the remainder is the arc/season.
+  var trimmed = body;
+  for (var cj = 0; cj < mainSlugs.length; cj++) {
+    var cs = mainSlugs[cj];
+    if (body.indexOf(cs + "-") === 0) {
+      trimmed = body.substring(cs.length + 1);
+      break;
+    }
+  }
+  if (!trimmed) return "";
+  var parts = trimmed.split("-").filter(Boolean);
+  for (var i = 0; i < parts.length; i++) {
+    parts[i] = parts[i].charAt(0).toUpperCase() + parts[i].substring(1);
+  }
+  return parts.join(" ");
+}
+
 // ─────────────────────────────────────────────
 // TMDB
 // ─────────────────────────────────────────────
@@ -273,7 +336,6 @@ function buildStrongTokens(info) {
 // ─────────────────────────────────────────────
 // Search animesdigital
 // FIX #1: site moved from /?s=Q (now 302) to /search/Q (200).
-// We slug the query so spaces become hyphens (matches the site's route).
 // ─────────────────────────────────────────────
 function searchAnime(query) {
   return __async(this, null, function* () {
@@ -357,7 +419,6 @@ function buildDirectGuessPages(tmdbInfo, season) {
   return out;
 }
 
-// FIX #2: page-size threshold lowered (40KB → 20KB).
 function tryFetchAnimePage(pageObj) {
   return __async(this, null, function* () {
     var res = yield fetchText(pageObj.url);
@@ -410,7 +471,11 @@ function parseEpisodes(html) {
 }
 
 // ─────────────────────────────────────────────
-// Extract HLS/MP4
+// Extract HLS/MP4 from episode page
+// FIX #5: Skip "fake MP4" iframes on animesdigital.org. The site embeds
+// a decoy iframe whose src ends in ".mp4" but actually serves an
+// obfuscated HTML player (not a real video). Only iframes pointing at
+// external hosts (api.anivideo.net, cdn-s01.*, etc.) are real streams.
 // ─────────────────────────────────────────────
 function extractStream(html) {
   var ifRe = /<iframe[^>]+src=["']([^"']+)["']/gi;
@@ -420,41 +485,68 @@ function extractStream(html) {
 
   for (var i = 0; i < iframes.length; i++) {
     var src = iframes[i];
+
+    // FIX #5a: skip same-domain iframes — they are HTML player wrappers.
+    if (/^https?:\/\/(?:www\.)?animesdigital\.org\//i.test(src)) continue;
+
+    // a) videohls.php?d=<url>
     var dMatch = src.match(/[?&]d=([^&]+)/);
     if (dMatch) {
       var inner = dMatch[1];
       try { inner = decodeURIComponent(inner); } catch (e) {}
+      // FIX #5b: also skip decoded URLs that point back at animesdigital.
+      if (/^https?:\/\/(?:www\.)?animesdigital\.org\//i.test(inner)) continue;
       if (/\.m3u8/i.test(inner)) return { url: inner, type: "hls", referer: BASE_URL + "/" };
       if (/\.mp4/i.test(inner)) return { url: inner, type: "mp4", referer: BASE_URL + "/" };
     }
+    // b) direct .m3u8/.mp4 iframe (rare)
     if (/\.m3u8/i.test(src)) return { url: src, type: "hls", referer: BASE_URL + "/" };
     if (/\.mp4(\?|$)/i.test(src)) return { url: src, type: "mp4", referer: BASE_URL + "/" };
   }
 
+  // 2) Direct .m3u8/.mp4 anywhere on the page (fallback)
+  // FIX #5c: also exclude same-domain matches here.
   var direct = html.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/gi);
-  if (direct && direct.length) return { url: direct[0], type: "hls", referer: BASE_URL + "/" };
+  if (direct) {
+    for (var di = 0; di < direct.length; di++) {
+      if (!/^https?:\/\/(?:www\.)?animesdigital\.org\//i.test(direct[di])) {
+        return { url: direct[di], type: "hls", referer: BASE_URL + "/" };
+      }
+    }
+  }
   var directMp4 = html.match(/https?:\/\/[^"'\s<>]+\.mp4[^"'\s<>]*/gi);
-  if (directMp4 && directMp4.length) return { url: directMp4[0], type: "mp4", referer: BASE_URL + "/" };
+  if (directMp4) {
+    for (var di2 = 0; di2 < directMp4.length; di2++) {
+      if (!/^https?:\/\/(?:www\.)?animesdigital\.org\//i.test(directMp4[di2])) {
+        return { url: directMp4[di2], type: "mp4", referer: BASE_URL + "/" };
+      }
+    }
+  }
 
   return null;
 }
 
 // ─────────────────────────────────────────────
 // Build stream object
-// FIX #3: notWebReady=true so Nuvio uses native demuxer (octet-stream MIME).
+// FIX #3: notWebReady=true so Nuvio uses native demuxer.
+// FIX #7: friendlier display title.
 // ─────────────────────────────────────────────
 function toStream(sx, info, animeSlug, season, episode, relevance, isDubbed) {
-  var titleBase =
-    (info.title || info.originalTitle || "Anime") +
-    (info.year ? " (" + info.year + ")" : "");
+  var mainTitle = info.title || info.originalTitle || "Anime";
+  var titleBase = mainTitle + (info.year ? " (" + info.year + ")" : "");
   var epTag = episode
     ? " · EP" + (season > 1 ? "S" + season + "E" + episode : String(episode))
     : "";
   var flag = isDubbed ? "DUB" : "LEG";
+
+  // Replace raw slug with a friendly arc/season name if there's extra info.
+  var arc = prettyArcName(animeSlug, info);
+  var arcSuffix = arc ? " · " + arc : "";
+
   return {
     _relevance: relevance || 0,
     name: PROVIDER_TAG + " · " + (sx.type === "hls" ? "HLS" : "MP4"),
-    title: titleBase + epTag + " · " + animeSlug + " [PT-BR " + flag + "]",
+    title: titleBase + epTag + arcSuffix + " [PT-BR " + flag + "]",
     quality: sx.quality || "Auto",
     url: sx.url,
     type: sx.type,
@@ -554,6 +646,7 @@ function getStreams(tmdbId, type, season, episode) {
 
       var targetEp = type === "tv" ? (episode || 1) : 1;
       var streams = [];
+      var seenStreamUrl = {}; // FIX #6: dedup by final stream URL.
 
       for (var cp = 0; cp < candidatePages.length && streams.length < 4; cp++) {
         var page = candidatePages[cp];
@@ -627,6 +720,15 @@ function getStreams(tmdbId, type, season, episode) {
           console.log("[" + PROVIDER_TAG + "] no stream extracted from " + epUrl);
           continue;
         }
+
+        // FIX #6: skip if we've already emitted this exact stream URL.
+        if (seenStreamUrl[sx.url]) {
+          console.log(
+            "[" + PROVIDER_TAG + "] dedup: " + page.slug + " → same URL as previous, skipping"
+          );
+          continue;
+        }
+        seenStreamUrl[sx.url] = 1;
 
         var qMatch = sx.url.match(/(1080|720|480|360)p?/i);
         sx.quality = qMatch ? qMatch[1] + "p" : "Auto";

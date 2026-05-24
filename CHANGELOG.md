@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.2.0 — 2026-05-24
+
+### Fixed
+- **MP4 falso eliminado.** A página de episódio tem 2 iframes: um real
+  (HLS via `api.anivideo.net`) e um **decoy** com URL terminando em
+  `.mp4` mas servida pelo próprio `animesdigital.org` — que na verdade
+  é um wrapper HTML ofuscado e leva ao `/home` se aberto direto.
+  Agora ignoramos qualquer iframe do domínio `animesdigital.org`.
+- **Streams duplicados removidos.** Quando 2+ páginas candidatas
+  apontam para o mesmo `.m3u8` (ex: `naruto` e `naruto-classico`
+  ambos redirecionando pro mesmo CDN), agora só emitimos 1 entrada.
+- **Manifest atualizado:** `formats` mudou de `["mp4","m3u8"]` para
+  apenas `["m3u8"]` (o site não serve MP4 real).
+
+### Improved
+- **Títulos legíveis** ao invés de slugs brutos:
+  - Antes: `kimetsu-no-yaiba-hashira-geiko-hen-dublado`
+  - Depois: `Hashira Geiko Hen`
+- Quando o slug é só o título principal (sem arc), não mostra nada
+  extra além do nome do anime + episódio.
+
 ## v1.1.0 — 2026-05-24
 
 ### Fixed
